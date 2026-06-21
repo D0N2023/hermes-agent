@@ -5467,6 +5467,56 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         else:
             self._console_print(f"[dim]{_escape(msg)}[/dim]")
 
+    def _apply_workspace_cwd(self, cwd: str) -> None:
+        """Pin a Project Workspace cwd for this CLI session without changing terminal.cwd."""
+        if not cwd:
+            return
+        try:
+            from agent.runtime_cwd import set_session_cwd
+
+            set_session_cwd(cwd)
+        except Exception:
+            pass
+        try:
+            from tools.terminal_tool import register_task_env_overrides
+
+            register_task_env_overrides(self.session_id or "default", {"cwd": cwd})
+            register_task_env_overrides("default", {"cwd": cwd})
+        except Exception:
+            pass
+        if self.agent and hasattr(self.agent, "_invalidate_system_prompt"):
+            try:
+                self.agent._invalidate_system_prompt()
+            except Exception:
+                pass
+        if self.agent and hasattr(self.agent, "_subdirectory_hints"):
+            try:
+                from agent.subdirectory_hints import SubdirectoryHintTracker
+
+                self.agent._subdirectory_hints = SubdirectoryHintTracker(working_dir=cwd)
+            except Exception:
+                pass
+
+    def _handle_workspace_message(self, text: str) -> bool:
+        """Handle smart Project Workspace messages before they reach the LLM."""
+        try:
+            from agent.workspaces import handle_workspace_message
+        except Exception:
+            return False
+        outcome = handle_workspace_message(text, session_id=self.session_id)
+        if not outcome.handled:
+            return False
+        if outcome.cwd:
+            self._apply_workspace_cwd(outcome.cwd)
+            if outcome.persistent and self._session_db:
+                try:
+                    self._session_db.update_session_cwd(self.session_id, outcome.cwd)
+                except Exception:
+                    pass
+        if outcome.message:
+            _cprint(outcome.message)
+        return True
+
 
 
     def _render_resume_history_panel_lines(self, panel) -> list[str]:
@@ -6129,6 +6179,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
+        old_workspace_cwd = ""
+        try:
+            from agent.workspaces import resolve_bound_cwd
+
+            old_workspace_cwd = resolve_bound_cwd(session_id=self.session_id)
+        except Exception:
+            old_workspace_cwd = ""
         if self.agent and self.conversation_history:
             # Trigger memory extraction on the old session before session_id rotates.
             self.agent.commit_memory_session(self.conversation_history)
@@ -6167,6 +6224,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._pending_title = None
         self._resumed = False
         _sync_process_session_id(self.session_id)
+        if old_workspace_cwd:
+            try:
+                from agent.workspaces import bind_workspace, detect_context_file
+
+                bind_workspace(
+                    old_workspace_cwd,
+                    context_file=detect_context_file(old_workspace_cwd),
+                    session_id=self.session_id,
+                )
+                self._apply_workspace_cwd(old_workspace_cwd)
+            except Exception:
+                pass
 
         if self.agent:
             self.agent.session_id = self.session_id
@@ -6194,6 +6263,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             "max_iterations": self.max_turns,
                             "reasoning_config": self.reasoning_config,
                         },
+                        cwd=old_workspace_cwd or None,
                     )
                     self.agent._session_db_created = True
                 except Exception:
@@ -13872,6 +13942,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         and self._pending_resume_sessions
                         and isinstance(user_input, str)
                         and self._consume_pending_resume_selection(user_input)
+                    ):
+                        continue
+
+                    if (
+                        not _file_drop
+                        and isinstance(user_input, str)
+                        and self._handle_workspace_message(user_input)
                     ):
                         continue
 

@@ -7818,6 +7818,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # which is read by _run_agent. Removed to prevent unbounded growth.
             return None
 
+        # Project Workspace: raw smart-cd / name-based switching before agent routing.
+        if event.message_type == MessageType.TEXT and not (event.text or "").strip().startswith("/"):
+            try:
+                from agent.workspaces import handle_workspace_message
+
+                _existing_session_id = ""
+                try:
+                    self.session_store._ensure_loaded()
+                    _existing_entry = self.session_store._entries.get(_quick_key)
+                    _existing_session_id = getattr(_existing_entry, "session_id", "") if _existing_entry else ""
+                except Exception:
+                    _existing_session_id = ""
+                _workspace_outcome = handle_workspace_message(
+                    event.text or "",
+                    session_id=_existing_session_id,
+                    platform=source.platform.value if source.platform else "",
+                    chat_id=str(source.chat_id) if source.chat_id else "",
+                    thread_id=str(source.thread_id) if source.thread_id else "",
+                )
+            except Exception as _ws_exc:
+                logger.debug("Project Workspace dispatch failed: %s", _ws_exc, exc_info=True)
+                _workspace_outcome = None
+            if _workspace_outcome is not None and _workspace_outcome.handled:
+                if _workspace_outcome.cwd:
+                    try:
+                        from tools.terminal_tool import register_task_env_overrides
+
+                        register_task_env_overrides(_quick_key, {"cwd": _workspace_outcome.cwd})
+                    except Exception:
+                        pass
+                    if _workspace_outcome.persistent:
+                        try:
+                            _entry = self.session_store.get_or_create_session(source)
+                            if self._session_db:
+                                self._session_db.update_session_cwd(
+                                    _entry.session_id, _workspace_outcome.cwd
+                                )
+                        except Exception:
+                            pass
+                        self._evict_cached_agent(_quick_key)
+                return _workspace_outcome.message
+
         # Check for commands
         command = event.get_command()
 
@@ -12534,6 +12576,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         in a ``finally`` block.
         """
         from gateway.session_context import set_session_vars
+        workspace_cwd = ""
+        try:
+            from agent.workspaces import resolve_bound_cwd
+
+            workspace_cwd = resolve_bound_cwd(
+                session_id=context.session_id,
+                platform=context.source.platform.value if context.source.platform else "",
+                chat_id=str(context.source.chat_id) if context.source.chat_id else "",
+                thread_id=str(context.source.thread_id) if context.source.thread_id else "",
+            )
+        except Exception:
+            workspace_cwd = ""
+        if workspace_cwd and context.session_key:
+            try:
+                from tools.terminal_tool import register_task_env_overrides
+
+                register_task_env_overrides(context.session_key, {"cwd": workspace_cwd})
+            except Exception:
+                pass
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -12543,6 +12604,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
+            cwd=workspace_cwd,
         )
 
     def _clear_session_env(self, tokens: list) -> None:

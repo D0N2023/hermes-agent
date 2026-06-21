@@ -78,6 +78,18 @@ class GatewaySlashCommandsMixin:
         # Snapshot the old entry so on_session_finalize can report the
         # expiring session id before reset_session() rotates it.
         old_entry = self.session_store._entries.get(session_key)
+        old_workspace_cwd = ""
+        try:
+            from agent.workspaces import resolve_bound_cwd
+
+            old_workspace_cwd = resolve_bound_cwd(
+                session_id=old_entry.session_id if old_entry else None,
+                platform=source.platform.value if source.platform else "",
+                chat_id=str(source.chat_id) if source.chat_id else "",
+                thread_id=str(source.thread_id) if source.thread_id else "",
+            )
+        except Exception:
+            old_workspace_cwd = ""
 
         # Close tool resources on the old agent (terminal sandboxes, browser
         # daemons, background processes) before evicting from cache.
@@ -112,6 +124,22 @@ class GatewaySlashCommandsMixin:
 
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
+        if new_entry and old_workspace_cwd:
+            try:
+                from agent.workspaces import bind_workspace, detect_context_file
+                from tools.terminal_tool import register_task_env_overrides
+
+                bind_workspace(
+                    old_workspace_cwd,
+                    context_file=detect_context_file(old_workspace_cwd),
+                    session_id=new_entry.session_id,
+                    platform=source.platform.value if source.platform else "",
+                    chat_id=str(source.chat_id) if source.chat_id else "",
+                    thread_id=str(source.thread_id) if source.thread_id else "",
+                )
+                register_task_env_overrides(session_key, {"cwd": old_workspace_cwd})
+            except Exception:
+                pass
 
         # Clear any session-scoped model/reasoning overrides so the next agent
         # picks up configured defaults instead of previous session switches.

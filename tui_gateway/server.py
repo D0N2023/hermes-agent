@@ -1311,6 +1311,34 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
         cleanup_vm(session["session_key"])
     except Exception:
         pass
+    agent = session.get("agent")
+    if agent is not None:
+        try:
+            agent._invalidate_system_prompt()
+        except Exception:
+            pass
+        try:
+            from agent.subdirectory_hints import SubdirectoryHintTracker
+
+            agent._subdirectory_hints = SubdirectoryHintTracker(working_dir=resolved)
+        except Exception:
+            pass
+    return resolved
+
+
+def _set_session_cwd_transient(session: dict, cwd: str) -> str:
+    resolved = os.path.abspath(os.path.expanduser(str(cwd)))
+    if not os.path.isdir(resolved):
+        raise ValueError(f"working directory does not exist: {cwd}")
+    session["cwd"] = resolved
+    session["explicit_cwd"] = False
+    _register_session_cwd(session)
+    agent = session.get("agent")
+    if agent is not None:
+        try:
+            agent._invalidate_system_prompt()
+        except Exception:
+            pass
     return resolved
 
 
@@ -6098,6 +6126,34 @@ def _(rid, params: dict) -> dict:
         # the upgrade resumes the child's transcript as a normal conversation.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
             return _err(rid, 4009, "subagent still running — wait for it to finish")
+        if isinstance(text, str):
+            try:
+                from agent.workspaces import handle_workspace_message
+
+                _projects_path = (
+                    Path(session["profile_home"]) / "projects.yaml"
+                    if session.get("profile_home")
+                    else None
+                )
+                outcome = handle_workspace_message(
+                    text,
+                    session_id=session.get("session_key"),
+                    path=_projects_path,
+                )
+            except Exception:
+                outcome = None
+            if outcome is not None and outcome.handled:
+                if outcome.cwd:
+                    try:
+                        if outcome.persistent:
+                            _set_session_cwd(session, outcome.cwd)
+                        else:
+                            _set_session_cwd_transient(session, outcome.cwd)
+                    except ValueError as exc:
+                        return _err(rid, 4017, str(exc))
+                _emit("message.start", sid)
+                _emit("message.complete", sid, {"text": outcome.message})
+                return _ok(rid, {"status": "handled"})
         if truncate_user_ordinal is not None:
             try:
                 ordinal = int(truncate_user_ordinal)
