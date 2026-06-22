@@ -163,11 +163,15 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         return null
       }
 
+      const currentCwd = getUiState().info?.cwd?.trim() ?? ''
       if (!keepCurrent) {
         await closeSession(getUiState().sid)
       }
 
-      const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current })
+      const r = await rpc<SessionCreateResponse>('session.create', {
+        cols: colsRef.current,
+        ...(currentCwd ? { cwd: currentCwd } : {})
+      })
 
       if (!r) {
         patchUiState({ status: 'ready' })

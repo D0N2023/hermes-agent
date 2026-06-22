@@ -5471,6 +5471,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Pin a Project Workspace cwd for this CLI session without changing terminal.cwd."""
         if not cwd:
             return
+        self._workspace_cwd = cwd
         try:
             from agent.runtime_cwd import set_session_cwd
 
@@ -6186,6 +6187,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             old_workspace_cwd = resolve_bound_cwd(session_id=self.session_id)
         except Exception:
             old_workspace_cwd = ""
+        if not old_workspace_cwd:
+            old_workspace_cwd = str(getattr(self, "_workspace_cwd", "") or "")
         if self.agent and self.conversation_history:
             # Trigger memory extraction on the old session before session_id rotates.
             self.agent.commit_memory_session(self.conversation_history)

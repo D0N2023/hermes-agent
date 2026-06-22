@@ -1,4 +1,5 @@
 from agent.workspaces import (
+    bind_workspace,
     handle_workspace_message,
     load_projects,
     resolve_bound_cwd,
@@ -83,3 +84,31 @@ def test_name_based_switch_handles_missing_and_match(tmp_path, monkeypatch):
     assert switched.cwd == str(project.resolve())
     assert "Workspace switched." in switched.message
     assert resolve_bound_cwd(session_id="sid4") == str(project.resolve())
+
+
+def test_workspace_can_be_bound_to_session_after_chat_first_switch(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    project = tmp_path / "chat-first"
+    project.mkdir()
+    (project / "AGENTS.md").write_text("# Chat first\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    switched = handle_workspace_message(
+        f"cd {project} #ChatFirst",
+        platform="telegram",
+        chat_id="chat1",
+        thread_id="",
+    )
+
+    assert switched.persistent
+    assert resolve_bound_cwd(session_id="created-after-switch") == ""
+    bind_workspace(
+        switched.cwd,
+        name=switched.name,
+        context_file=switched.context_file,
+        session_id="created-after-switch",
+        platform="telegram",
+        chat_id="chat1",
+        thread_id="",
+    )
+    assert resolve_bound_cwd(session_id="created-after-switch") == str(project.resolve())

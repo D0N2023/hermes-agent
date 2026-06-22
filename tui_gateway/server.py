@@ -1295,6 +1295,7 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     if not os.path.isdir(resolved):
         raise ValueError(f"working directory does not exist: {cwd}")
     session["cwd"] = resolved
+    session["workspace_cwd"] = resolved
     # An explicit user choice — persist it as the workspace (and let a later
     # lazy row creation persist it too, not the launch-dir fallback).
     session["explicit_cwd"] = True
@@ -6151,6 +6152,9 @@ def _(rid, params: dict) -> dict:
                             _set_session_cwd_transient(session, outcome.cwd)
                     except ValueError as exc:
                         return _err(rid, 4017, str(exc))
+                    agent = session.get("agent")
+                    if agent is not None:
+                        _emit("session.info", sid, _session_info(agent, session))
                 _emit("message.start", sid)
                 _emit("message.complete", sid, {"text": outcome.message})
                 return _ok(rid, {"status": "handled"})

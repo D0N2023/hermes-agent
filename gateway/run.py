@@ -7850,7 +7850,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         pass
                     if _workspace_outcome.persistent:
                         try:
+                            from agent.workspaces import bind_workspace, detect_context_file
+
                             _entry = self.session_store.get_or_create_session(source)
+                            bind_workspace(
+                                _workspace_outcome.cwd,
+                                name=_workspace_outcome.name,
+                                context_file=_workspace_outcome.context_file
+                                or detect_context_file(_workspace_outcome.cwd),
+                                session_id=_entry.session_id,
+                                platform=source.platform.value if source.platform else "",
+                                chat_id=str(source.chat_id) if source.chat_id else "",
+                                thread_id=str(source.thread_id) if source.thread_id else "",
+                            )
                             if self._session_db:
                                 self._session_db.update_session_cwd(
                                     _entry.session_id, _workspace_outcome.cwd
