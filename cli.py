@@ -5518,6 +5518,31 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cprint(outcome.message)
         return True
 
+    def _handle_project_command(self, args: str) -> None:
+        try:
+            from agent.workspaces import handle_project_command, resolve_bound_cwd
+
+            current = str(getattr(self, "_workspace_cwd", "") or "") or resolve_bound_cwd(
+                session_id=self.session_id
+            )
+            outcome = handle_project_command(
+                args,
+                session_id=self.session_id,
+                current_cwd=current,
+            )
+        except Exception as exc:
+            _cprint(f"Project command failed: {exc}")
+            return
+        if outcome.cwd:
+            self._apply_workspace_cwd(outcome.cwd)
+            if outcome.persistent and self._session_db:
+                try:
+                    self._session_db.update_session_cwd(self.session_id, outcome.cwd)
+                except Exception:
+                    pass
+        if outcome.message:
+            _cprint(outcome.message)
+
 
 
     def _render_resume_history_panel_lines(self, panel) -> list[str]:
@@ -7563,6 +7588,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.show_help()
         elif canonical == "profile":
             self._handle_profile_command()
+        elif canonical == "project":
+            self._handle_project_command(cmd_original.split(None, 1)[1] if len(cmd_original.split(None, 1)) > 1 else "")
         elif canonical == "tools":
             self._handle_tools_command(cmd_original)
         elif canonical == "toolsets":

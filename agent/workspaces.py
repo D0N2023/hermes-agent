@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -217,6 +218,167 @@ def find_by_name(name: str, *, path: Path | None = None) -> list[tuple[str, dict
     return matches
 
 
+def list_workspaces(*, path: Path | None = None) -> list[tuple[str, dict[str, Any]]]:
+    data = load_projects(path)
+    items: list[tuple[str, dict[str, Any]]] = []
+    for cwd, meta in data.get("workspaces", {}).items():
+        if isinstance(meta, dict):
+            items.append((str(cwd), meta))
+    return sorted(items, key=lambda item: (str(item[1].get("name") or "").casefold(), item[0]))
+
+
+def _initialize_or_switch_project(
+    name: str,
+    path_text: str,
+    *,
+    session_id: str | None = None,
+    platform: str | None = None,
+    chat_id: str | None = None,
+    thread_id: str | None = None,
+    path: Path | None = None,
+) -> WorkspaceOutcome:
+    try:
+        cwd_path = _real_dir(path_text, must_exist=False)
+        created_dir = False
+        if not cwd_path.exists():
+            cwd_path.mkdir(parents=True)
+            created_dir = True
+        if not cwd_path.is_dir():
+            return WorkspaceOutcome(True, f"Project path is not a directory: {cwd_path}")
+        cwd = str(cwd_path.resolve(strict=True))
+        context = detect_context_file(cwd)
+        created_context = False
+        if not context:
+            agents = Path(cwd) / "AGENTS.md"
+            agents.write_text(_template_agents_md(name), encoding="utf-8")
+            context = "AGENTS.md"
+            created_context = True
+        cwd, display = bind_workspace(
+            cwd,
+            name=name,
+            context_file=context,
+            session_id=session_id,
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            path=path,
+        )
+    except ValueError as exc:
+        return WorkspaceOutcome(True, str(exc))
+    except OSError as exc:
+        return WorkspaceOutcome(True, f"Could not initialize project: {exc}")
+
+    verb = "initialized" if created_dir or created_context else "registered"
+    suffix = " created and loaded" if created_context else " loaded"
+    return WorkspaceOutcome(
+        True,
+        f"Project {verb}.\nName: {display}\nPath: {cwd}\nContext: {context}{suffix}",
+        cwd,
+        display,
+        context,
+        True,
+    )
+
+
+def _switch_project_by_name(
+    name: str,
+    *,
+    session_id: str | None = None,
+    platform: str | None = None,
+    chat_id: str | None = None,
+    thread_id: str | None = None,
+    path: Path | None = None,
+) -> WorkspaceOutcome:
+    matches = find_by_name(name, path=path)
+    matches = [(cwd, meta) for cwd, meta in matches if Path(cwd).is_dir()]
+    if not matches:
+        return WorkspaceOutcome(
+            True,
+            f"No project named {name} was found.\nRegister it with:\n/project {name} /absolute/path",
+        )
+    if len(matches) > 1:
+        paths = "\n".join(f"- {cwd}" for cwd, _ in matches)
+        return WorkspaceOutcome(True, f"Multiple projects named {name} were found. Specify the path:\n{paths}")
+    cwd, meta = matches[0]
+    context = detect_context_file(cwd) or str(meta.get("context_file") or "")
+    cwd, display = bind_workspace(
+        cwd,
+        name=name,
+        context_file=context,
+        session_id=session_id,
+        platform=platform,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        path=path,
+    )
+    return WorkspaceOutcome(
+        True,
+        f"Project switched.\nName: {display}\nPath: {cwd}\nContext: {context or 'no project context found'} loaded",
+        cwd,
+        display,
+        context,
+        True,
+    )
+
+
+def handle_project_command(
+    args: str,
+    *,
+    session_id: str | None = None,
+    platform: str | None = None,
+    chat_id: str | None = None,
+    thread_id: str | None = None,
+    current_cwd: str | None = None,
+    path: Path | None = None,
+) -> WorkspaceOutcome:
+    text = str(args or "").strip()
+    usage = "Usage:\n/project list\n/project <name>\n/project <name> /absolute/path"
+    if not text:
+        return WorkspaceOutcome(True, usage)
+    try:
+        parts = shlex.split(text)
+    except ValueError as exc:
+        return WorkspaceOutcome(True, f"Could not parse /project arguments: {exc}\n{usage}")
+    if not parts:
+        return WorkspaceOutcome(True, usage)
+
+    if len(parts) == 1 and parts[0].lower() == "list":
+        items = list_workspaces(path=path)
+        if not items:
+            return WorkspaceOutcome(True, "No projects registered yet.\nRegister one with:\n/project <name> /absolute/path")
+        current = str(Path(current_cwd).resolve()) if current_cwd and Path(current_cwd).is_dir() else ""
+        lines = ["Projects:"]
+        for cwd, meta in items:
+            name = str(meta.get("name") or Path(cwd).name or cwd)
+            marker = " *" if current and str(Path(cwd).resolve()) == current else ""
+            context = detect_context_file(cwd) or str(meta.get("context_file") or "")
+            context_part = f" [{context}]" if context else ""
+            lines.append(f"- {name}: {cwd}{context_part}{marker}")
+        return WorkspaceOutcome(True, "\n".join(lines))
+
+    if len(parts) == 1:
+        return _switch_project_by_name(
+            parts[0],
+            session_id=session_id,
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            path=path,
+        )
+
+    name = parts[0]
+    path_text = " ".join(parts[1:])
+    return _initialize_or_switch_project(
+        name,
+        path_text,
+        session_id=session_id,
+        platform=platform,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        path=path,
+    )
+
+
 def handle_workspace_message(
     message: str,
     *,
@@ -236,47 +398,22 @@ def handle_workspace_message(
         explicit_name = (m.group("name") or "").strip()
         try:
             if explicit_name:
-                cwd_path = _real_dir(raw_path, must_exist=False)
-                created_dir = False
-                if not cwd_path.exists():
-                    cwd_path.mkdir(parents=True)
-                    created_dir = True
-                if not cwd_path.is_dir():
-                    return WorkspaceOutcome(True, f"Workspace path is not a directory: {cwd_path}")
-                cwd = str(cwd_path.resolve(strict=True))
-                context = detect_context_file(cwd)
-                created_context = False
-                if not context:
-                    agents = Path(cwd) / "AGENTS.md"
-                    agents.write_text(_template_agents_md(explicit_name), encoding="utf-8")
-                    context = "AGENTS.md"
-                    created_context = True
-                cwd, display = bind_workspace(
-                    cwd,
-                    name=explicit_name,
-                    context_file=context,
+                outcome = _initialize_or_switch_project(
+                    explicit_name,
+                    raw_path,
                     session_id=session_id,
                     platform=platform,
                     chat_id=chat_id,
                     thread_id=thread_id,
                     path=path,
                 )
-                if created_dir or created_context:
-                    return WorkspaceOutcome(
-                        True,
-                        f"Workspace initialized.\nName: {display}\nPath: {cwd}\nContext: {context} created and loaded",
-                        cwd,
-                        display,
-                        context,
-                        True,
-                    )
                 return WorkspaceOutcome(
-                    True,
-                    f"Workspace switched.\nName: {display}\nPath: {cwd}\nContext: {context} loaded",
-                    cwd,
-                    display,
-                    context,
-                    True,
+                    outcome.handled,
+                    outcome.message.replace("Project registered.", "Workspace switched.").replace("Project initialized.", "Workspace initialized."),
+                    outcome.cwd,
+                    outcome.name,
+                    outcome.context_file,
+                    outcome.persistent,
                 )
 
             cwd_path = _real_dir(raw_path, must_exist=True)
@@ -325,22 +462,8 @@ def handle_workspace_message(
     if not m:
         return WorkspaceOutcome(False)
     name = m.group("name").strip()
-    matches = find_by_name(name, path=path)
-    matches = [(cwd, meta) for cwd, meta in matches if Path(cwd).is_dir()]
-    if not matches:
-        return WorkspaceOutcome(
-            True,
-            f"No workspace named {name} was found.\nCreate or register it with:\ncd /absolute/path/to/new-app #{name}",
-        )
-    if len(matches) > 1:
-        paths = "\n".join(f"- {cwd}" for cwd, _ in matches)
-        return WorkspaceOutcome(True, f"Multiple workspaces named {name} were found. Specify the path:\n{paths}")
-    cwd, meta = matches[0]
-    context = detect_context_file(cwd) or str(meta.get("context_file") or "")
-    cwd, display = bind_workspace(
-        cwd,
-        name=name,
-        context_file=context,
+    outcome = _switch_project_by_name(
+        name,
         session_id=session_id,
         platform=platform,
         chat_id=chat_id,
@@ -348,10 +471,13 @@ def handle_workspace_message(
         path=path,
     )
     return WorkspaceOutcome(
-        True,
-        f"Workspace switched.\nName: {display}\nPath: {cwd}\nContext: {context or 'no project context found'} loaded",
-        cwd,
-        display,
-        context,
-        True,
+        outcome.handled,
+        outcome.message.replace("No project named", "No workspace named").replace(
+            f"Register it with:\n/project {name} /absolute/path",
+            f"Create or register it with:\ncd /absolute/path/to/new-app #{name}",
+        ).replace("Project switched.", "Workspace switched."),
+        outcome.cwd,
+        outcome.name,
+        outcome.context_file,
+        outcome.persistent,
     )

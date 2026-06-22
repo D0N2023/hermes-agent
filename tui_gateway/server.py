@@ -8555,6 +8555,7 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "q",
         "steer",
         "plan",
+        "project",
         "goal",
         "undo",
     }
@@ -8818,6 +8819,35 @@ def _(rid, params: dict) -> dict:
         if not arg:
             return _err(rid, 4004, "usage: /queue <prompt>")
         return _ok(rid, {"type": "send", "message": arg})
+
+    if name == "project":
+        if not session:
+            return _err(rid, 4001, "no active session")
+        try:
+            from agent.workspaces import handle_project_command
+
+            _projects_path = (
+                Path(session["profile_home"]) / "projects.yaml"
+                if session.get("profile_home")
+                else None
+            )
+            outcome = handle_project_command(
+                arg,
+                session_id=session.get("session_key"),
+                current_cwd=session.get("workspace_cwd") or session.get("cwd") or "",
+                path=_projects_path,
+            )
+            if outcome.cwd:
+                if outcome.persistent:
+                    _set_session_cwd(session, outcome.cwd)
+                else:
+                    _set_session_cwd_transient(session, outcome.cwd)
+                agent = session.get("agent")
+                if agent is not None:
+                    _emit("session.info", params.get("session_id", ""), _session_info(agent, session))
+            return _ok(rid, {"type": "exec", "output": outcome.message})
+        except Exception as exc:
+            return _err(rid, 5030, f"project command failed: {exc}")
 
     if name == "retry":
         if not session:

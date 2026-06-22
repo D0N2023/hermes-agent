@@ -8006,6 +8006,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "profile":
             return await self._handle_profile_command(event)
 
+        if canonical == "project":
+            try:
+                from agent.workspaces import handle_project_command, resolve_bound_cwd
+
+                _entry = self.session_store.get_or_create_session(source)
+                _current = resolve_bound_cwd(
+                    session_id=_entry.session_id,
+                    platform=source.platform.value if source.platform else "",
+                    chat_id=str(source.chat_id) if source.chat_id else "",
+                    thread_id=str(source.thread_id) if source.thread_id else "",
+                )
+                _outcome = handle_project_command(
+                    event.get_command_args(),
+                    session_id=_entry.session_id,
+                    platform=source.platform.value if source.platform else "",
+                    chat_id=str(source.chat_id) if source.chat_id else "",
+                    thread_id=str(source.thread_id) if source.thread_id else "",
+                    current_cwd=_current,
+                )
+                if _outcome.cwd:
+                    try:
+                        from tools.terminal_tool import register_task_env_overrides
+
+                        register_task_env_overrides(_quick_key, {"cwd": _outcome.cwd})
+                    except Exception:
+                        pass
+                    if _outcome.persistent:
+                        if self._session_db:
+                            self._session_db.update_session_cwd(_entry.session_id, _outcome.cwd)
+                        self._evict_cached_agent(_quick_key)
+                return _outcome.message
+            except Exception as exc:
+                logger.debug("Project command failed", exc_info=True)
+                return f"Project command failed: {exc}"
+
         if canonical == "whoami":
             return await self._handle_whoami_command(event)
 

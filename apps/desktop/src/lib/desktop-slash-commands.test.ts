@@ -44,12 +44,15 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/tools')).toBe(true)
     expect(isDesktopSlashSuggestion('/save')).toBe(true)
     expect(isDesktopSlashSuggestion('/personality')).toBe(true)
+    expect(isDesktopSlashSuggestion('/project')).toBe(true)
     expect(isDesktopSlashCommand('/tools')).toBe(true)
     expect(isDesktopSlashCommand('/save')).toBe(true)
     expect(isDesktopSlashCommand('/personality')).toBe(true)
+    expect(isDesktopSlashCommand('/project')).toBe(true)
     expect(desktopSlashUnavailableMessage('/tools')).toBeNull()
     expect(desktopSlashUnavailableMessage('/save')).toBeNull()
     expect(desktopSlashUnavailableMessage('/personality')).toBeNull()
+    expect(desktopSlashUnavailableMessage('/project')).toBeNull()
   })
 
   it('treats /browser as an executable action command (local-gateway connect)', () => {

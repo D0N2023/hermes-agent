@@ -1,5 +1,6 @@
 from agent.workspaces import (
     bind_workspace,
+    handle_project_command,
     handle_workspace_message,
     load_projects,
     resolve_bound_cwd,
@@ -112,3 +113,28 @@ def test_workspace_can_be_bound_to_session_after_chat_first_switch(tmp_path, mon
         thread_id="",
     )
     assert resolve_bound_cwd(session_id="created-after-switch") == str(project.resolve())
+
+
+def test_project_command_registers_lists_and_switches(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    project = tmp_path / "project-command"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    registered = handle_project_command(f"App {project}", session_id="sid5")
+
+    assert registered.handled
+    assert registered.persistent
+    assert registered.cwd == str(project.resolve())
+    assert (project / "AGENTS.md").is_file()
+    assert "Project initialized." in registered.message
+    assert resolve_bound_cwd(session_id="sid5") == str(project.resolve())
+
+    listed = handle_project_command("list", current_cwd=str(project))
+    assert listed.handled
+    assert f"- App: {project.resolve()} [AGENTS.md] *" in listed.message
+
+    switched = handle_project_command("App", session_id="sid6")
+    assert switched.handled
+    assert switched.cwd == str(project.resolve())
+    assert "Project switched." in switched.message
+    assert resolve_bound_cwd(session_id="sid6") == str(project.resolve())
